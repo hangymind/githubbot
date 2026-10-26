@@ -128,6 +128,7 @@ def main():
                     if not args.discard_pending:
                         raise ValueError("解绑会丢弃旧目标积压；确认后加 --discard-pending")
                     db.execute("UPDATE outbox SET state='skipped' WHERE state NOT IN ('sent','skipped')")
+                    db.execute("DELETE FROM pull_items")
                     db.execute("DELETE FROM binding")
                     db.execute("DELETE FROM bind_tokens")
                 elif args.command == "retry-event":
@@ -136,6 +137,9 @@ def main():
                                       (args.id,)).rowcount:
                         raise ValueError("找不到该失败事件")
                 elif args.command == "retry":
+                    row = db.execute("SELECT kind FROM outbox WHERE id=?", (args.id,)).fetchone()
+                    if row and row["kind"] == "pull":
+                        raise ValueError("领取回复不能重试旧 msg_id；请在原会话重新发送 /更新")
                     if not settings.include_url:
                         # A queued message keeps its original text. Honor disabling links on retry.
                         row = db.execute("SELECT content,sha,kind FROM outbox WHERE id=? AND state='failed'",
@@ -151,9 +155,14 @@ def main():
                     if args.resolution == "retry" and not args.accept_duplicate_risk:
                         raise ValueError("重试可能重复；确认后加 --accept-duplicate-risk")
                     state = "pending" if args.resolution == "retry" else args.resolution
+                    resolved = db.execute("SELECT kind FROM outbox WHERE id=?", (args.id,)).fetchone()
+                    if resolved and resolved["kind"] == "pull" and args.resolution == "retry":
+                        # Release reservations for a new command; never reuse an old reply window.
+                        state = "expired"
                     if not db.execute("UPDATE outbox SET state=?,due=0,error='operator_resolved' "
                                       "WHERE id=? AND state='uncertain'", (state, args.id)).rowcount:
                         raise ValueError("找不到该 uncertain 任务")
+                    store.settle_pull(db, args.id, state)
             print("操作完成。请启动服务，并运行 status 检查状态。")
     except Timeout:
         print("服务正在运行；此操作请先停止 qbot 服务后再执行。", file=sys.stderr)

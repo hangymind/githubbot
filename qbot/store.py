@@ -30,6 +30,9 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state,kind,id);
 CREATE TABLE IF NOT EXISTS api_diagnostics(
  id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, stage TEXT NOT NULL,
  details TEXT NOT NULL, created REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS pull_items(
+ reply_id INTEGER NOT NULL, commit_id INTEGER NOT NULL UNIQUE,
+ previous_state TEXT NOT NULL, PRIMARY KEY(reply_id,commit_id));
 """
 
 
@@ -64,6 +67,55 @@ class Store:
         with self.connect() as db:
             db.execute("UPDATE outbox SET state='uncertain',error='interrupted_send' WHERE state='sending'")
             db.execute("UPDATE inbox SET state='pending' WHERE state='processing'")
+
+    @staticmethod
+    def settle_pull(db, reply_id, state, remote_id=None):
+        items = db.execute("SELECT * FROM pull_items WHERE reply_id=?", (reply_id,)).fetchall()
+        for item in items:
+            if state == "sent":
+                db.execute("UPDATE outbox SET state='sent',error=NULL,remote_id=? WHERE id=?",
+                           (remote_id, item["commit_id"]))
+            elif state == "skipped":
+                db.execute("UPDATE outbox SET state='skipped' WHERE id=?", (item["commit_id"],))
+            elif state in {"failed", "expired"}:
+                db.execute("UPDATE outbox SET state=? WHERE id=?",
+                           (item["previous_state"], item["commit_id"]))
+        if state in {"sent", "skipped", "failed", "expired"}:
+            db.execute("DELETE FROM pull_items WHERE reply_id=?", (reply_id,))
+
+    def enqueue_pull(self, db, group, target_type, msg_id):
+        if db.execute("SELECT 1 FROM pull_items").fetchone():
+            return "已有领取任务进行中或结果待核查，请稍后重试；uncertain 需服务器处理。"
+        rows = db.execute("SELECT * FROM outbox WHERE kind='commit' "
+                          "AND state NOT IN ('sent','skipped') ORDER BY id LIMIT 2").fetchall()
+        if not rows:
+            incomplete = db.execute("SELECT 1 FROM inbox WHERE state!='done'").fetchone()
+            return ("暂无可领取提交；仍有入站事件待处理，请稍后再试。" if incomplete else "暂无积压提交。")
+        selected = []
+        content = "积压提交（本次最多 2 条）\n"
+        for row in rows:
+            allowed = row["state"] == "pending" or (
+                row["state"] == "failed" and row["error"] == "qq_40034105")
+            if (not allowed or (row["group_id"] and (
+                    row["group_id"] != group or row["target_type"] != target_type))):
+                break
+            candidate = content + "\n" + row["content"] + "\n"
+            if len((candidate + "\n继续领取请再发送 /更新。").encode()) > 3500:
+                break
+            content = candidate
+            selected.append(row)
+        if not selected:
+            return "最早提交正在发送、结果待核查或存在其他错误；请在服务器检查 jobs，暂不越过该记录。"
+        content += "\n继续领取请再发送 /更新。"
+        reply_id = db.execute(
+            "INSERT INTO outbox(kind,group_id,content,msg_id,expires,created,target_type) "
+            "VALUES('pull',?,?,?,?,?,?)",
+            (group, content, msg_id, time.time() + 240, time.time(), target_type)).lastrowid
+        for row in selected:
+            db.execute("INSERT INTO pull_items VALUES(?,?,?)", (reply_id, row["id"], row["state"]))
+            db.execute("UPDATE outbox SET state='pulling',group_id=?,target_type=? WHERE id=?",
+                       (group, target_type, row["id"]))
+        return None
 
     def accept(self, delivery, payload):
         with self.connect() as db:
@@ -155,6 +207,12 @@ class Store:
                     reply += "；队列：" + json.dumps(self.counts(db), ensure_ascii=False)
                 else:
                     reply = "仅绑定操作者可在原绑定会话内查询状态。"
+            elif command == "/更新":
+                if (binding and binding["group_id"] == group and binding["owner"] == owner
+                        and binding["target_type"] == target_type):
+                    reply = self.enqueue_pull(db, group, target_type, msg_id)
+                else:
+                    reply = "仅绑定操作者可在原绑定会话内领取提交。"
             elif command in {"/测试", "/test"}:
                 allowed = (binding and binding["group_id"] == group and binding["owner"] == owner
                            and binding["target_type"] == target_type)
@@ -178,7 +236,7 @@ class Store:
                                    "VALUES('diagnostic',?,?,?,?,?,?)",
                                    (group, "diagnostic", msg_id, time.time() + 240, time.time(), target_type))
             elif command in {"/帮助", "/help"}:
-                reply = "GitHub 广播：/绑定 口令；/状态；/测试；/测试 主动。口令 10 分钟有效。"
+                reply = "GitHub 广播：/绑定 口令；/状态；/更新；/测试；/测试 主动。口令 10 分钟有效。"
             if reply:
                 # Replies expire before QQ's five-minute passive reply window.
                 db.execute("INSERT INTO outbox(kind,group_id,content,msg_id,expires,created,target_type) "
@@ -188,6 +246,10 @@ class Store:
     def claim(self, now):
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            for expired in db.execute("SELECT id FROM outbox WHERE kind='pull' "
+                                      "AND state='pending' AND expires<?", (now,)).fetchall():
+                db.execute("UPDATE outbox SET state='expired' WHERE id=?", (expired["id"],))
+                self.settle_pull(db, expired["id"], "expired")
             db.execute("UPDATE outbox SET state='expired' "
                        "WHERE kind IN ('reply','diagnostic','probe') AND state='pending' AND expires<?",
                        (now,))
@@ -195,7 +257,7 @@ class Store:
             if last and float(last[0]) > now:
                 return None
             # Passive command replies do not get stuck behind a paused broadcast.
-            row = db.execute("SELECT * FROM outbox WHERE kind IN ('reply','diagnostic','probe') "
+            row = db.execute("SELECT * FROM outbox WHERE kind IN ('reply','diagnostic','probe','pull') "
                              "AND state='pending' AND due<=? "
                              "ORDER BY id LIMIT 1", (now,)).fetchone()
             # A probe result must be known before its following diagnostic report is built.
@@ -223,5 +285,7 @@ class Store:
 
     def finish(self, job_id, state, error=None, due=0, remote_id=None):
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("UPDATE outbox SET state=?,error=?,due=?,remote_id=? WHERE id=?",
                        (state, error, due, remote_id, job_id))
+            self.settle_pull(db, job_id, state, remote_id)
