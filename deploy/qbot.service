@@ -1,0 +1,23 @@
+[Unit]
+Description=GitHub commit to QQ group broadcaster
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=qbot
+Group=qbot
+WorkingDirectory=/opt/qbot
+ExecStart=/opt/qbot/.venv/bin/python -m qbot serve
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/qbot/data
+
+[Install]
+WantedBy=multi-user.target
