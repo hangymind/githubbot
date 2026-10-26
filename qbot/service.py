@@ -55,6 +55,9 @@ class Worker:
             lines.append("GitHub 读取提交：网络请求失败（不输出原始异常）")
         collection = "users/{user_openid}" if job["target_type"] == "private" else "groups/{group_openid}"
         lines.append(f"QQ POST /v2/{collection}/messages；msg_type=0；Authorization=QQBot [隐藏]")
+        lines.append(f"请求头 X-Union-Appid={self.settings.app_id}；"
+                     "Content-Type=application/json; charset=utf-8")
+        lines.append("主动请求仅含 content/msg_type，不携带 msg_id/event_id；被动回复含 msg_id/msg_seq=1。")
         with self.store.connect() as db:
             rows = db.execute(
                 "SELECT d.job_id,d.stage,d.details FROM api_diagnostics d JOIN outbox o ON o.id=d.job_id "
@@ -73,6 +76,7 @@ class Worker:
         for row in errors:
             lines.append(f"错误记录：任务{row['id']} {row['state']} {row['error']}")
         lines.extend(["40034105：平台拒绝主动发送；回复成功不代表主动权限可用。",
+                      "GROUP_MESSAGE_CREATE / GROUP_AT_MESSAGE_CREATE 是接收事件，不是主动发送授权。",
                       "核对目标通知开关、单聊/群聊主动权限、发布/测试范围、环境。",
                       "可发送 /测试 主动 单独验证主动消息；报告可读仅证明被动回复成功。"])
         return "\n".join(lines)

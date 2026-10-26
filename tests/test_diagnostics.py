@@ -45,10 +45,15 @@ def test_active_denial_still_reports_passive_success(settings, target, caplog):
         if request.url.path.endswith("getAppAccessToken"):
             return httpx.Response(200, json={"access_token": "private-access-token", "expires_in": 7200})
         payload = json.loads(request.content)
+        assert request.headers["X-Union-Appid"] == settings.app_id
+        assert request.headers["Content-Type"] == "application/json; charset=utf-8"
+        assert request.headers["Authorization"] == "QQBot private-access-token"
         sent.append(payload)
         collection = "users/u" if target == "private" else "groups/g"
         assert request.url.path == f"/v2/{collection}/messages"
         if "msg_id" not in payload:
+            assert set(payload) == {"content", "msg_type"}
+            assert payload["msg_type"] == 0
             return httpx.Response(200, json={"err_code": 40034105, "message": settings.app_secret},
                                   headers={"X-Tps-trace-ID": "trace-1234"})
         return httpx.Response(200, json={"id": "report-sent"})
@@ -66,6 +71,9 @@ def test_active_denial_still_reports_passive_success(settings, target, caplog):
     assert "40034105" in report and "trace-1234" in report
     assert "GitHub 读取提交：HTTP 200" in report
     assert "不代表主动权限" in report
+    assert "X-Union-Appid=1906010968" in report
+    assert "不携带 msg_id/event_id" in report
+    assert "是接收事件，不是主动发送授权" in report
     with store.connect() as db:
         audit = " ".join(r[0] for r in db.execute("SELECT details FROM api_diagnostics"))
         assert db.execute("SELECT state FROM outbox WHERE kind='diagnostic'").fetchone()[0] == "sent"

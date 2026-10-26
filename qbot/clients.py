@@ -84,7 +84,12 @@ class QQClient:
         url = self.settings.qq_base + f"/v2/{collection}/" + quote(job["group_id"], safe="") + "/messages"
         try:
             started = time.monotonic()
-            r = await self.http.post(url, json=payload, headers={"Authorization": "QQBot " + token})
+            # Match the official botpy client, which also sends X-Union-Appid.
+            # This is request compatibility, not an active-message permission grant.
+            r = await self.http.post(url, json=payload, headers={
+                "Authorization": "QQBot " + token,
+                "X-Union-Appid": self.settings.app_id,
+                "Content-Type": "application/json; charset=utf-8"})
             self.record(target_type + ("_reply" if job["msg_id"] else "_active"), r, started)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             raise DeliveryError("pending", "connect_failed") from None

@@ -186,6 +186,8 @@ def test_send_success_cache_refresh_rate_and_business_error(settings):
             if request.url.path.endswith("getAppAccessToken"):
                 return httpx.Response(200, json={"access_token": "test-token", "expires_in": "7200"})
             assert request.headers["Authorization"] == "QQBot test-token"
+            assert request.headers["X-Union-Appid"] == settings.app_id
+            assert request.headers["Content-Type"] == "application/json; charset=utf-8"
             assert "msg_id" not in json.loads(request.content)
             return httpx.Response(200, json={"id": "sent-1"})
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:

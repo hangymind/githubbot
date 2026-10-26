@@ -53,6 +53,14 @@ sudo -u qbot .venv/bin/python -m qbot bind-token --target private
 
 40034105 表示平台拒绝主动发送，管理端勾选接口权限不等于目标关系和当前运行环境实际允许主动发送。检查：目标用户/群的主动消息开关、单聊与群聊场景对应的主动权限、机器人发布/测试范围、AppID 和 production/sandbox 是否与实际使用的机器人一致。被动回复成功只证明回调及回复链路可用，不证明主动推送已放开。修复后运行 /测试 主动，若仍失败，把脱敏 TraceID 与时间提交 QQ 平台排查，不要发 AppSecret。
 
+按官方群聊发送接口核对：主动文本请求为 content + msg_type=0，不携带 msg_id/event_id；msg_seq 用于与 msg_id 联合去重，不是开启主动消息的参数。文档示例携带 msg_id，因此示例展示的是被动回复；不能把历史消息 ID 填进去冒充主动推送。GROUP_MESSAGE_CREATE / GROUP_AT_MESSAGE_CREATE 是接收事件订阅，不等于主动发送授权。
+
+发送请求现补齐官方 botpy SDK 使用的 X-Union-Appid 请求头（取 QQ_APP_ID），并显式设置 Content-Type: application/json; charset=utf-8。当前 API 调用指南仅要求 QQBot access_token，未说明该附加头能解决 40034105；此项是兼容性修正，不能承诺解除权限拒绝。/测试 报告会显示这两项请求头及主被动字段区别，不输出凭证或目标 OpenID。
+
+升级后先执行 /测试 主动，确认主动测试消息真正到达，再处理旧失败提交：服务器运行 .venv/bin/python -m qbot jobs 查看任务，按 .venv/bin/python -m qbot retry --help 逐条重试；不要直接改数据库或批量重投结果不明的消息。若仍为 40034105，保留最新 TraceID 和测试时间交平台核查，可继续使用 /更新 领取积压。
+
+核对依据：[官方群聊发送接口](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html)、[官方 API 调用指南](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/api-call-guide.html)、[官方 botpy HTTP 实现](https://github.com/tencent-connect/botpy/blob/master/botpy/http.py)。
+
 若连被动报告都未收到，在服务器运行 .venv/bin/python -m qbot diagnostics，并查看 journalctl -u qbot -n 100；新增日志会记录 job、stage（private_active/private_reply/group_active/group_reply/token）、HTTP、业务码、TraceID 和耗时。只保存最近 500 条 API 诊断记录；升级前旧失败任务不会补出当时不存在的 TraceID。GitHub 读取成功不证明 GitHub Webhook 已配置成功，需在 Recent Deliveries 检查。
 
 修复权限后重试日志中的任务 4：先 sudo systemctl stop qbot，再在项目目录 sudo -u qbot .venv/bin/python -m qbot retry 4，最后 sudo systemctl start qbot。保持原有安全机制，不把 commit 伪装成过期被动回复。
