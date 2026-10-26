@@ -50,8 +50,11 @@ async def baseline(settings, store):
 def main():
     parser = argparse.ArgumentParser(description="QQ GitHub 广播管理；在项目目录运行，自动读取 .env")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("serve", "baseline", "bind-token", "status", "jobs", "events", "resume"):
+    for name in ("serve", "baseline", "status", "jobs", "events", "resume"):
         sub.add_parser(name)
+    token_parser = sub.add_parser("bind-token")
+    token_parser.add_argument("--target", choices=["group", "private"], default="group",
+                              help="group 群聊（兼容旧版）；private 私聊")
     retry = sub.add_parser("retry", help="重试明确失败的发送任务（不包括 uncertain）")
     retry.add_argument("id", type=int)
     event = sub.add_parser("retry-event")
@@ -81,7 +84,8 @@ def main():
             return
         if args.command in {"jobs", "events"}:
             with store.connect() as db:
-                query = ("SELECT id,kind,state,attempts,error,created FROM outbox ORDER BY id DESC LIMIT 50"
+                query = ("SELECT id,kind,target_type,state,attempts,error,created "
+                         "FROM outbox ORDER BY id DESC LIMIT 50"
                          if args.command == "jobs" else
                          "SELECT id,state,error,created FROM inbox ORDER BY id DESC LIMIT 50")
                 print(json.dumps([dict(r) for r in db.execute(query)], ensure_ascii=False, indent=2))
@@ -95,8 +99,10 @@ def main():
             print("一致性备份已完成；备份含私有提交元数据，请妥善保管。")
             return
         if args.command == "bind-token":
-            print("10 分钟内在目标群 @机器人 /绑定 以下口令（仅本次显示）：")
-            print(store.token())
+            code = store.token(args.target)
+            where = "在机器人私聊中发送" if args.target == "private" else "在目标群 @机器人"
+            print(f"10 分钟内{where} /绑定 以下口令（仅本次显示）：")
+            print(code)
             return
         # Changes to delivery state and destinations require a stopped worker.
         with FileLock(str(settings.database) + ".service.lock", timeout=0):
@@ -110,11 +116,11 @@ def main():
                     db.execute("UPDATE binding SET enabled=1")
                 elif args.command == "unbind":
                     if db.execute("SELECT 1 FROM inbox WHERE state!='done'").fetchone():
-                        raise ValueError("入站事件尚未处理完成；请先处理 events 中的积压，再更换群")
+                        raise ValueError("入站事件尚未处理完成；请先处理 events 中的积压，再更换推送目标")
                     if db.execute("SELECT 1 FROM outbox WHERE state IN ('sending','uncertain')").fetchone():
                         raise ValueError("请先启动服务恢复发送状态，再核查并 resolve 所有 uncertain 任务")
                     if not args.discard_pending:
-                        raise ValueError("解绑会丢弃旧群积压；确认后加 --discard-pending")
+                        raise ValueError("解绑会丢弃旧目标积压；确认后加 --discard-pending")
                     db.execute("UPDATE outbox SET state='skipped' WHERE state NOT IN ('sent','skipped')")
                     db.execute("DELETE FROM binding")
                     db.execute("DELETE FROM bind_tokens")

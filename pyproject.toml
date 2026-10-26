@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "github-qq-broadcaster"
 version = "1.0.0"
-description = "Durable GitHub commit notifications for an official QQ group bot"
+description = "Durable GitHub commit notifications for official QQ group and private chats"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",

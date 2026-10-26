@@ -149,7 +149,8 @@ def create_app(settings=None, *, background=True, http=None):
             if not isinstance(p.get("d"), dict):
                 raise HTTPException(400, "invalid event")
             # Message ID is used too: the same message can arrive under another event delivery.
-            identity = p["d"].get("id") if p.get("t") == "GROUP_AT_MESSAGE_CREATE" else p.get("id")
+            identity = (p["d"].get("id") if p.get("t") in {"GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"}
+                        else p.get("id"))
             if not isinstance(identity, str) or not identity:
                 raise HTTPException(400, "missing event identity")
             store.qq_event(str(p.get("t")) + ":" + identity, p.get("t"), p["d"])

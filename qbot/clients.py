@@ -52,7 +52,11 @@ class QQClient:
         payload = {"msg_type": 0, "content": job["content"]}
         if job["msg_id"]:
             payload.update(msg_id=job["msg_id"], msg_seq=1)
-        url = self.settings.qq_base + "/v2/groups/" + quote(job["group_id"], safe="") + "/messages"
+        target_type = job.get("target_type", "group")
+        if target_type not in {"group", "private"}:
+            raise DeliveryError("failed", "invalid_target_type")
+        collection = "users" if target_type == "private" else "groups"
+        url = self.settings.qq_base + f"/v2/{collection}/" + quote(job["group_id"], safe="") + "/messages"
         try:
             r = await self.http.post(url, json=payload, headers={"Authorization": "QQBot " + token})
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):

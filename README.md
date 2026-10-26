@@ -1,10 +1,43 @@
-# GitHub Commit → QQ 群广播机器人
+# GitHub Commit → QQ 群聊 / 私聊广播机器人
 
-私有仓库新提交 → HTTPS Webhook → SQLite 队列 → 官方 QQ 群机器人。默认全部分支、每个新 SHA 一条纯文本消息，单群绑定。AppID 已预设为 1906010968。
+私有仓库新提交 → HTTPS Webhook → SQLite 队列 → 官方 QQ 机器人。默认全部分支、每个新 SHA 一条纯文本消息，支持绑定一个 QQ 群或一个私聊用户（两者择一，不同时订阅）。AppID 已预设为 1906010968。
+
+## 无法加群时：直接使用私聊推送
+
+无需先加入 QQ 群。更新代码后，在 QQ 开发平台为同一个 Webhook 回调订阅 **C2C_MESSAGE_CREATE**，建议同时订阅 **C2C_MSG_REJECT、FRIEND_DEL**。回调地址仍是 https://你的域名/webhooks/qq，不需要 WebSocket 或新的 AppSecret。
+
+先确保你可以通过平台提供的机器人资料页/测试入口打开私聊，且账号在开发测试允许范围内，机器人具备单聊与主动消息权限。加群失败的具体原因需看平台后台、发布状态和测试群配置；私聊接入也需要对应权限，代码不能替代平台授权。
+
+在服务器项目目录执行（宝塔目录为 /www/wwwroot/qbot）：
+
+~~~bash
+cd /www/wwwroot/qbot
+sudo -u qbot .venv/bin/python -m qbot bind-token --target private
+~~~
+
+然后直接在机器人私聊中发送 **/绑定 刚生成的口令**，不需要 @。收到绑定成功后，新 commit 会主动发送到该私聊。私聊支持 /帮助、/状态。用户标识从签名事件 author.user_openid 读取，不填写个人 QQ 号。
+
+口令区分群聊和私聊，私聊口令不能在群里使用。默认 bind-token 仍生成群聊口令，兼容已有教程。当前已绑定群时，先按“管理、恢复与换群”步骤停服并解绑，再生成私聊口令，不会自动把群积压转到私聊。删除好友或关闭主动通知会暂停推送，恢复关系与权限后在服务器 resume，不会自动恢复。
+
+### 已部署版本升级
+
+~~~bash
+cd /www/wwwroot/qbot
+sudo systemctl stop qbot
+sudo -u qbot .venv/bin/python -m qbot backup /www/wwwroot/qbot/data/before-private.sqlite3
+sudo -u qbot git pull --ff-only
+sudo -u qbot .venv/bin/python -m pip install -e .
+sudo systemctl start qbot
+sudo -u qbot .venv/bin/python -m qbot bind-token --target private
+~~~
+
+若之前通过压缩包上传、没有 .git，则上传新代码覆盖源码，保留 .env 和 data。备份目标需不存在。已有绑定时最后一步会拒绝生成口令，先人工处理旧队列并解绑。升级会自动增加目的地类型字段，原群绑定、口令与队列保留，不要删库或重建 baseline。旧版程序无法读取新版表结构，请勿直接降级；确需回退时停服并恢复升级前备份。
+
+私聊主动推送使用 /v2/users/{user_openid}/messages；commit 不携带过期 msg_id，也不使用召回消息额度。请开启允许机器人主动发送。限频、拒收、权限不足和发送结果不确定仍按队列机制处理。命令回复保守地在 4 分钟内发送。
 
 ## 1. 准备与配置
 
-需要 Python 3.12+（推荐 Ubuntu 24.04 LTS）、域名及 HTTPS、QQ 群消息和主动群消息权限、私有 GitHub 仓库的 Webhook 设置权限。GitHub fine-grained token 仅授权目标仓库，授予 Contents: Read-only；组织仓库可能需要组织审批/SSO。
+需要 Python 3.12+（推荐 Ubuntu 24.04 LTS）、域名及 HTTPS、所选 QQ 群聊或单聊场景及主动消息权限、私有 GitHub 仓库的 Webhook 设置权限。GitHub fine-grained token 仅授权目标仓库，授予 Contents: Read-only；组织仓库可能需要组织审批/SSO。
 
 **现在到填写配置这一步才需要 AppSecret：从 QQ 开发平台复制，在自己的服务器中填入 .env，不要发到聊天里。** AppSecret 用于换取 QQ access_token 与回调签名，不是旧 Token，也不是 GitHub Webhook Secret。
 
@@ -280,6 +313,8 @@ sudo -u qbot .venv/bin/python -m qbot backup /opt/qbot/data/backup-2026-10-26.sq
 - [QQ Webhook](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/event-emit/webhook.html)
 - [QQ Ed25519 签名](https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/sign.html)
 - [QQ 群消息发送](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_groups_group_openid_messages.post.html)
+- [QQ 单聊消息发送](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_users_user_openid_messages.post.html)
+- [QQ 单聊事件](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/c2c_message_create.html)
 - [GitHub Webhook 事件](https://docs.github.com/en/webhooks/webhook-events-and-payloads#push)
 - [GitHub Compare API](https://docs.github.com/en/rest/commits/commits#compare-two-commits)
 

@@ -1,5 +1,4 @@
 import asyncio
-import json
 import sys
 import time
 from dataclasses import replace
@@ -57,7 +56,7 @@ def test_baseline_api_failure_does_not_activate(settings, monkeypatch):
 def test_cli_retry_uncertain_resolution_backup_and_unbind(settings, monkeypatch, tmp_path):
     store = Store(settings.database)
     with store.connect() as db:
-        db.execute("INSERT INTO binding VALUES(1,'g','u',1)")
+        db.execute("INSERT INTO binding(id,group_id,owner,enabled) VALUES(1,'g','u',1)")
         db.execute("INSERT INTO outbox(kind,content,state,created) VALUES('commit','private','uncertain',0)")
     with pytest.raises(SystemExit):
         cli(monkeypatch, settings, "retry", "1")
@@ -88,7 +87,7 @@ def test_exclusive_service_lock_and_config_repo_guard(settings, monkeypatch):
 def test_worker_failed_send_retains_and_redacts(settings, caplog):
     store = Store(settings.database)
     with store.connect() as db:
-        db.execute("INSERT INTO binding VALUES(1,'g','u',1)")
+        db.execute("INSERT INTO binding(id,group_id,owner,enabled) VALUES(1,'g','u',1)")
         db.execute("INSERT INTO outbox(kind,content,created) VALUES('commit','private-message-body',0)")
     def handler(r):
         return httpx.Response(200, json={"err_code": 40034105, "message": "private-message-body"})
@@ -111,10 +110,12 @@ def test_json_validation_payload_limits_and_qt_pause(settings):
             "X-Bot-Appid": settings.app_id}).status_code == 400
     store = Store(settings.database)
     with store.connect() as db:
-        db.execute("INSERT INTO binding VALUES(1,'g','u',1)")
+        db.execute("INSERT INTO binding(id,group_id,owner,enabled) VALUES(1,'g','u',1)")
     store.qq_event("reject", "GROUP_MSG_REJECT", {"group_openid": "g"})
     assert not store.status()["enabled"]
-    assert "group" not in json.dumps(store.status())
+    assert "group_id" not in store.status()
+    assert "owner" not in store.status()
+    assert store.status()["target_type"] == "group"
 
 
 def test_repo_changed_rejected_before_worker(settings):
