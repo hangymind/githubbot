@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import re
 import time
 from urllib.parse import quote
 
@@ -12,20 +14,42 @@ class DeliveryError(Exception):
 
 
 class QQClient:
-    def __init__(self, settings, http):
+    def __init__(self, settings, http, audit=None):
         self.settings, self.http = settings, http
+        self.audit = audit
+        self.job_id = 0
         self.cached_token = None
         self.expiry = 0
         self.lock = asyncio.Lock()
+
+    def record(self, stage, response, started):
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        code = str(data.get("err_code", data.get("code", 0)))
+        trace = str(response.headers.get("X-Tps-trace-ID", data.get("trace_id", "")))
+        details = {"http": response.status_code,
+                   "code": code if re.fullmatch(r"[0-9]{1,12}", code) else "unknown",
+                   "trace": trace if re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", trace) else "-",
+                   "ms": int((time.monotonic() - started) * 1000)}
+        if self.audit:
+            self.audit(self.job_id, stage, details)
+        logging.getLogger("qbot").info("api job=%s stage=%s http=%s code=%s trace=%s ms=%s",
+                                       self.job_id, stage, *details.values())
 
     async def token(self):
         async with self.lock:
             if self.cached_token and time.time() < self.expiry:
                 return self.cached_token
             try:
+                started = time.monotonic()
                 r = await self.http.post("https://api.bot.qq.com/app/getAppAccessToken",
                                          json={"appId": self.settings.app_id,
                                                "clientSecret": self.settings.app_secret})
+                self.record("token", r, started)
                 data = r.json()
                 if not isinstance(data, dict):
                     raise ValueError
@@ -48,6 +72,7 @@ class QQClient:
                 raise DeliveryError("pending", "token_unavailable") from None
 
     async def send(self, job):
+        self.job_id = job.get("id", 0)
         token = await self.token()
         payload = {"msg_type": 0, "content": job["content"]}
         if job["msg_id"]:
@@ -58,7 +83,9 @@ class QQClient:
         collection = "users" if target_type == "private" else "groups"
         url = self.settings.qq_base + f"/v2/{collection}/" + quote(job["group_id"], safe="") + "/messages"
         try:
+            started = time.monotonic()
             r = await self.http.post(url, json=payload, headers={"Authorization": "QQBot " + token})
+            self.record(target_type + ("_reply" if job["msg_id"] else "_active"), r, started)
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout):
             raise DeliveryError("pending", "connect_failed") from None
         except httpx.HTTPError:

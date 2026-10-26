@@ -37,6 +37,18 @@ sudo -u qbot .venv/bin/python -m qbot bind-token --target private
 
 ## 1. 准备与配置
 
+### 联通诊断与 qq_40034105
+
+在已绑定群中由原绑定操作者发送 **@机器人 /测试**，或在已绑定私聊发送 **/测试**。显示 AppID、正式/沙箱环境、目标场景、被动回复模式、QQ token 可用性、GitHub 读取提交 HTTP 状态、队列状态，以及近期脱敏 HTTP/错误码/TraceID。不输出密钥、目标 OpenID、仓库内容或平台原始响应。详细诊断仅允许原绑定会话的操作者，60 秒冷却。
+
+发送 **/测试 主动** 会额外发送一条不含 msg_id 的主动测试消息，然后通过当前指令的 msg_id 被动回复诊断报告。主动测试不会自动重试，限频/拒绝也会记录并返回报告，不能据此绕过平台权限。/测试 不改变或重试失败的 commit；诊断请求能越过被失败 commit 阻塞的队列。
+
+40034105 表示平台拒绝主动发送，管理端勾选接口权限不等于目标关系和当前运行环境实际允许主动发送。检查：目标用户/群的主动消息开关、单聊与群聊场景对应的主动权限、机器人发布/测试范围、AppID 和 production/sandbox 是否与实际使用的机器人一致。被动回复成功只证明回调及回复链路可用，不证明主动推送已放开。修复后运行 /测试 主动，若仍失败，把脱敏 TraceID 与时间提交 QQ 平台排查，不要发 AppSecret。
+
+若连被动报告都未收到，在服务器运行 .venv/bin/python -m qbot diagnostics，并查看 journalctl -u qbot -n 100；新增日志会记录 job、stage（private_active/private_reply/group_active/group_reply/token）、HTTP、业务码、TraceID 和耗时。只保存最近 500 条 API 诊断记录；升级前旧失败任务不会补出当时不存在的 TraceID。GitHub 读取成功不证明 GitHub Webhook 已配置成功，需在 Recent Deliveries 检查。
+
+修复权限后重试日志中的任务 4：先 sudo systemctl stop qbot，再在项目目录 sudo -u qbot .venv/bin/python -m qbot retry 4，最后 sudo systemctl start qbot。保持原有安全机制，不把 commit 伪装成过期被动回复。
+
 需要 Python 3.12+（推荐 Ubuntu 24.04 LTS）、域名及 HTTPS、所选 QQ 群聊或单聊场景及主动消息权限、私有 GitHub 仓库的 Webhook 设置权限。GitHub fine-grained token 仅授权目标仓库，授予 Contents: Read-only；组织仓库可能需要组织审批/SSO。
 
 **现在到填写配置这一步才需要 AppSecret：从 QQ 开发平台复制，在自己的服务器中填入 .env，不要发到聊天里。** AppSecret 用于换取 QQ access_token 与回调签名，不是旧 Token，也不是 GitHub Webhook Secret。

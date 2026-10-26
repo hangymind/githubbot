@@ -50,7 +50,7 @@ async def baseline(settings, store):
 def main():
     parser = argparse.ArgumentParser(description="QQ GitHub 广播管理；在项目目录运行，自动读取 .env")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("serve", "baseline", "status", "jobs", "events", "resume"):
+    for name in ("serve", "baseline", "status", "jobs", "events", "resume", "diagnostics"):
         sub.add_parser(name)
     token_parser = sub.add_parser("bind-token")
     token_parser.add_argument("--target", choices=["group", "private"], default="group",
@@ -81,6 +81,12 @@ def main():
             return
         if args.command == "status":
             print(json.dumps(store.status(), ensure_ascii=False, indent=2))
+            return
+        if args.command == "diagnostics":
+            with store.connect() as db:
+                rows = db.execute("SELECT job_id,stage,details,created FROM api_diagnostics "
+                                  "ORDER BY id DESC LIMIT 20").fetchall()
+                print(json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2))
             return
         if args.command in {"jobs", "events"}:
             with store.connect() as db:

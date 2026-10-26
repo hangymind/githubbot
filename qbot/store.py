@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS outbox(
  state TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
  due REAL NOT NULL DEFAULT 0, error TEXT, remote_id TEXT, created REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state,kind,id);
+CREATE TABLE IF NOT EXISTS api_diagnostics(
+ id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, stage TEXT NOT NULL,
+ details TEXT NOT NULL, created REAL NOT NULL);
 """
 
 
@@ -93,6 +96,14 @@ class Store:
                     "inbox": {r[0]: r[1] for r in db.execute(
                         "SELECT state,count(*) FROM inbox GROUP BY state")}}
 
+    def audit(self, job_id, stage, details):
+        # Caller supplies a fixed whitelist, never HTTP bodies or Authorization headers.
+        with self.connect() as db:
+            db.execute("INSERT INTO api_diagnostics(job_id,stage,details,created) VALUES(?,?,?,?)",
+                       (job_id, stage, json.dumps(details), time.time()))
+            db.execute("DELETE FROM api_diagnostics WHERE id <= "
+                       "(SELECT COALESCE(MAX(id),0)-500 FROM api_diagnostics)")
+
     def qq_event(self, event_id, kind, data):
         """Handle commands atomically; never persist raw command text or binding secrets."""
         private = kind in {"C2C_MESSAGE_CREATE", "C2C_MSG_REJECT", "FRIEND_DEL"}
@@ -144,8 +155,30 @@ class Store:
                     reply += "；队列：" + json.dumps(self.counts(db), ensure_ascii=False)
                 else:
                     reply = "仅绑定操作者可在原绑定会话内查询状态。"
+            elif command in {"/测试", "/test"}:
+                allowed = (binding and binding["group_id"] == group and binding["owner"] == owner
+                           and binding["target_type"] == target_type)
+                if not allowed:
+                    reply = "回调已收到并通过验签；详细诊断仅限绑定操作者在原绑定会话执行。"
+                else:
+                    key = "diagnostic_last"
+                    last = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+                    if last and time.time() - float(last[0]) < 60:
+                        reply = "诊断冷却中，请 60 秒后重试。"
+                    else:
+                        db.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (key, str(time.time())))
+                        if len(parts) == 2 and parts[1] == "主动":
+                            db.execute("INSERT INTO outbox"
+                                       "(kind,group_id,content,expires,created,target_type) "
+                                       "VALUES('probe',?,?,?,?,?)",
+                                       (group, "主动推送联通测试（非 commit）。", time.time() + 240,
+                                        time.time(), target_type))
+                        db.execute("INSERT INTO outbox"
+                                   "(kind,group_id,content,msg_id,expires,created,target_type) "
+                                   "VALUES('diagnostic',?,?,?,?,?,?)",
+                                   (group, "diagnostic", msg_id, time.time() + 240, time.time(), target_type))
             elif command in {"/帮助", "/help"}:
-                reply = "GitHub 提交广播：/绑定 一次性口令；/状态。口令由服务器生成，10 分钟有效。"
+                reply = "GitHub 广播：/绑定 口令；/状态；/测试；/测试 主动。口令 10 分钟有效。"
             if reply:
                 # Replies expire before QQ's five-minute passive reply window.
                 db.execute("INSERT INTO outbox(kind,group_id,content,msg_id,expires,created,target_type) "
@@ -156,14 +189,21 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute("UPDATE outbox SET state='expired' "
-                       "WHERE kind='reply' AND state='pending' AND expires<?",
+                       "WHERE kind IN ('reply','diagnostic','probe') AND state='pending' AND expires<?",
                        (now,))
             last = db.execute("SELECT value FROM meta WHERE key='next_send'").fetchone()
             if last and float(last[0]) > now:
                 return None
             # Passive command replies do not get stuck behind a paused broadcast.
-            row = db.execute("SELECT * FROM outbox WHERE kind='reply' AND state='pending' AND due<=? "
+            row = db.execute("SELECT * FROM outbox WHERE kind IN ('reply','diagnostic','probe') "
+                             "AND state='pending' AND due<=? "
                              "ORDER BY id LIMIT 1", (now,)).fetchone()
+            # A probe result must be known before its following diagnostic report is built.
+            if row and row["kind"] == "diagnostic" and db.execute(
+                    "SELECT 1 FROM outbox WHERE kind='probe' AND state IN ('pending','sending') "
+                    "AND group_id=? AND target_type=? AND id<?",
+                    (row["group_id"], row["target_type"], row["id"])).fetchone():
+                return None
             if not row:
                 b = db.execute("SELECT * FROM binding WHERE enabled=1").fetchone()
                 if not b:
